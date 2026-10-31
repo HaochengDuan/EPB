@@ -1,0 +1,8 @@
+# LEHD teacher, CVRP-100. The teacher checkpoint (CIAM-Group/NCO_code format) is not part of this package; the LEHD
+# model code is imported from a clone of that repository (generate.nco_root).
+setting: {name: lehd_cvrp}
+run: {output_dir: runs/lehd_cvrp100, seed: 42}
+data: {path: data/lehd_cvrp100_steps}
+generate: {teacher_ckpt: <LEHD_CVRP100_CKPT>, nco_root: <NCO_code clone>, problem_size: 100}
+train: {epochs: 30}
+llm: {model: deepseek-v4-pro, reasoning_effort: none, max_workers: 16, max_cost_usd: 40, price_input: 0.66, price_output: 1.98, price_cache_read: 0.022}

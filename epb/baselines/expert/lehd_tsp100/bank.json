@@ -1,0 +1,54 @@
+{
+ "heuristics": [
+  {
+   "index": 0,
+   "description": "",
+   "code": "import torch\nimport torch.nn.functional as F\nimport math\n\ndef heuristic(unselected_locs, first_loc, current_loc):\n    d_ci = (unselected_locs - current_loc.unsqueeze(1)).norm(dim=-1)\n    return -d_ci\n"
+  },
+  {
+   "index": 1,
+   "description": "",
+   "code": "import torch\nimport torch.nn.functional as F\nimport math\n\ndef heuristic(unselected_locs, first_loc, current_loc):\n    d_ci = (unselected_locs - current_loc.unsqueeze(1)).norm(dim=-1)\n    d_is = (unselected_locs - first_loc.unsqueeze(1)).norm(dim=-1)\n    d_cs = (current_loc - first_loc).norm(dim=-1).unsqueeze(1)\n    return -(d_ci + d_is - d_cs)\n"
+  },
+  {
+   "index": 2,
+   "description": "",
+   "code": "import torch\nimport torch.nn.functional as F\nimport math\n\ndef heuristic(unselected_locs, first_loc, current_loc):\n    d_ci = (unselected_locs - current_loc.unsqueeze(1)).norm(dim=-1)\n    K = unselected_locs.shape[1]\n    BIG = 1e9\n    D = torch.cdist(unselected_locs, unselected_locs)\n    eye = torch.eye(K, dtype=torch.bool, device=unselected_locs.device).unsqueeze(0)\n    nxt = D.masked_fill(eye, BIG).min(dim=-1).values\n    nxt = torch.where(nxt >= 0.5 * BIG, torch.zeros_like(nxt), nxt)\n    return -(d_ci + nxt)\n"
+  },
+  {
+   "index": 3,
+   "description": "",
+   "code": "import torch\nimport torch.nn.functional as F\nimport math\n\ndef heuristic(unselected_locs, first_loc, current_loc):\n    d_ci = (unselected_locs - current_loc.unsqueeze(1)).norm(dim=-1)\n    d_is = (unselected_locs - first_loc.unsqueeze(1)).norm(dim=-1)\n    K = unselected_locs.shape[1]\n    BIG = 1e9\n    D = torch.cdist(unselected_locs, unselected_locs)\n    eye = torch.eye(K, dtype=torch.bool, device=unselected_locs.device).unsqueeze(0)\n    cost = (D + d_is.unsqueeze(1)).masked_fill(eye, BIG)\n    best = cost.min(dim=-1).values\n    best = torch.where(best >= 0.5 * BIG, d_is, best)\n    return -(d_ci + best)\n"
+  },
+  {
+   "index": 4,
+   "description": "",
+   "code": "import torch\nimport torch.nn.functional as F\nimport math\n\ndef _norm(x):\n    lo = x.min(dim=-1, keepdim=True).values\n    hi = x.max(dim=-1, keepdim=True).values\n    out = (x - lo) / (hi - lo).clamp_min(1e-8)\n    out = torch.nan_to_num(out, nan=0.0, posinf=1.0, neginf=0.0)\n    return out.clamp(0.0, 1.0)\n\ndef heuristic(unselected_locs, first_loc, current_loc):\n    d_ci = (unselected_locs - current_loc.unsqueeze(1)).norm(dim=-1)\n    mu = unselected_locs.mean(dim=1)\n    r = (unselected_locs - mu.unsqueeze(1)).norm(dim=-1)\n    return _norm(r) + _norm(-d_ci)\n"
+  },
+  {
+   "index": 5,
+   "description": "",
+   "code": "import torch\nimport torch.nn.functional as F\nimport math\n\ndef heuristic(unselected_locs, first_loc, current_loc):\n    mu = unselected_locs.mean(dim=1)\n    vc = current_loc - mu\n    vi = unselected_locs - mu.unsqueeze(1)\n    ang_c = torch.atan2(vc[:, 1], vc[:, 0]).unsqueeze(1)\n    ang_i = torch.atan2(vi[..., 1], vi[..., 0])\n    return -torch.remainder(ang_c - ang_i, 2.0 * math.pi)\n"
+  },
+  {
+   "index": 6,
+   "description": "",
+   "code": "import torch\nimport torch.nn.functional as F\nimport math\n\ndef heuristic(unselected_locs, first_loc, current_loc):\n    mu = unselected_locs.mean(dim=1)\n    vc = current_loc - mu\n    vi = unselected_locs - mu.unsqueeze(1)\n    ang_c = torch.atan2(vc[:, 1], vc[:, 0]).unsqueeze(1)\n    ang_i = torch.atan2(vi[..., 1], vi[..., 0])\n    return -torch.remainder(ang_i - ang_c, 2.0 * math.pi)\n"
+  },
+  {
+   "index": 7,
+   "description": "",
+   "code": "import torch\nimport torch.nn.functional as F\nimport math\n\ndef _norm(x):\n    lo = x.min(dim=-1, keepdim=True).values\n    hi = x.max(dim=-1, keepdim=True).values\n    out = (x - lo) / (hi - lo).clamp_min(1e-8)\n    out = torch.nan_to_num(out, nan=0.0, posinf=1.0, neginf=0.0)\n    return out.clamp(0.0, 1.0)\n\ndef heuristic(unselected_locs, first_loc, current_loc):\n    d_ci = (unselected_locs - current_loc.unsqueeze(1)).norm(dim=-1)\n    u = current_loc - first_loc\n    v = unselected_locs - current_loc.unsqueeze(1)\n    un = u.norm(dim=-1, keepdim=True).clamp_min(1e-8)\n    vn = v.norm(dim=-1).clamp_min(1e-8)\n    a = (u.unsqueeze(1) * v).sum(dim=-1) / (un * vn)\n    return _norm(a) + _norm(-d_ci)\n"
+  },
+  {
+   "index": 8,
+   "description": "",
+   "code": "import torch\nimport torch.nn.functional as F\nimport math\n\ndef _norm(x):\n    lo = x.min(dim=-1, keepdim=True).values\n    hi = x.max(dim=-1, keepdim=True).values\n    out = (x - lo) / (hi - lo).clamp_min(1e-8)\n    out = torch.nan_to_num(out, nan=0.0, posinf=1.0, neginf=0.0)\n    return out.clamp(0.0, 1.0)\n\ndef heuristic(unselected_locs, first_loc, current_loc):\n    d_ci = (unselected_locs - current_loc.unsqueeze(1)).norm(dim=-1)\n    K = unselected_locs.shape[1]\n    BIG = 1e9\n    D = torch.cdist(unselected_locs, unselected_locs)\n    eye = torch.eye(K, dtype=torch.bool, device=unselected_locs.device).unsqueeze(0)\n    rho = D.masked_fill(eye, BIG).min(dim=-1).values\n    rho = torch.where(rho >= 0.5 * BIG, torch.zeros_like(rho), rho)\n    return _norm(rho) + _norm(-d_ci)\n"
+  },
+  {
+   "index": 9,
+   "description": "",
+   "code": "import torch\nimport torch.nn.functional as F\nimport math\n\ndef _norm(x):\n    lo = x.min(dim=-1, keepdim=True).values\n    hi = x.max(dim=-1, keepdim=True).values\n    out = (x - lo) / (hi - lo).clamp_min(1e-8)\n    out = torch.nan_to_num(out, nan=0.0, posinf=1.0, neginf=0.0)\n    return out.clamp(0.0, 1.0)\n\ndef heuristic(unselected_locs, first_loc, current_loc):\n    d_ci = (unselected_locs - current_loc.unsqueeze(1)).norm(dim=-1)\n    d_is = (unselected_locs - first_loc.unsqueeze(1)).norm(dim=-1)\n    return _norm(-d_ci) + _norm(d_is)\n"
+  }
+ ]
+}

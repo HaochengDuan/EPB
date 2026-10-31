@@ -1,0 +1,391 @@
+context: |-
+  **CVRP setting:**
+    - Node 0 is the depot. Nodes 1..N are customers with positive demand.
+    - Vehicle has fixed capacity 1.0 (normalized).
+    - `load[b]` is remaining capacity at the current decision step ∈ [0, 1].
+    - When the vehicle returns to the depot, capacity refills to 1.0.
+    - `mask[b, n]` is True iff node n is feasible to visit next (already encodes
+      BOTH "not yet visited" AND "demand fits remaining capacity"). The depot
+      is feasible iff the vehicle is not currently at the depot.
+    - The teacher (${teacher}) tends to:
+        * Build tight tours from a starting customer outward
+        * Return to depot precisely when capacity runs out
+        * Prefer customers near the current position with demand that
+          "cleanly fits" the remaining capacity
+
+  **Critical: the teacher distribution is near one-hot.**
+  The teacher policy is a near-deterministic ${teacher} model:
+    - top-1 node receives ~95% probability
+    - top-2 node receives ~4.5% probability
+    - the remaining nodes share less than 0.5% combined
+
+  Two implications for heuristic design:
+
+  1. **Output sharp, decisive scores.** The winning node's score should be
+     substantially higher than the runner-up. After softmax with the training
+     temperature τ=${tau_h}, your output should look near-one-hot in clear-cut
+     situations — not a smoothly graded distribution.
+
+  2. **Top-1 is what matters; top-2 is a soft backup; the rest is irrelevant.**
+     Don't waste complexity on shaping the bottom of the distribution.
+
+  Heuristics are evaluated on:
+    (a) whether their argmax matches the teacher's argmax  (primary)
+    (b) whether their top-2 contains the teacher's argmax  (secondary)
+
+idea_system: |-
+  You are an expert in the 2D Capacitated Vehicle Routing Problem (CVRP)
+  with ${problem_size} customers in [0,1]^2 (+ 1 depot at index 0).
+
+  ${context}
+
+  Describe ONE strategy for choosing the next node at each step (1-3 sentences).
+  The strategy should produce a CLEAR top-1 winner and reason about BOTH:
+    - geometry (distance / clusters / route shape) AND
+    - capacity (load remaining / demand fit / depot timing).
+
+  Diversity guideline:
+  Avoid proposing a strategy that is functionally identical to an existing one.
+  - You may reuse existing features as secondary signals, as long as the overall
+    combination or decision logic is meaningfully new.
+  - Simpler strategies with one or two strong signals are preferred over complex blends.
+
+  Use only CVRP reasoning. Do NOT write code or formulas.
+
+idea_user: |-
+  Propose a heuristic for next-node selection in CVRP with ${problem_size} customers.
+  Direction: ${direction}
+
+  Existing strategies (propose something different):
+  ${existing}
+
+seeds:
+  - "nearest-feasible: prefer the closest unvisited customer whose demand fits the remaining load"
+  - "snug-fit: prefer customers whose demand is close to (but does not exceed) the remaining load — minimise wasted capacity per leg"
+  - "greedy-then-depot: while plenty of load remains, go to the closest customer; when load is low, prefer returning to depot to refill rather than choosing a marginally-fitting tiny customer"
+  - "cluster-aware: prefer customers that lie inside a tight cluster of unvisited customers, so future legs stay short"
+  - "savings-style: prefer customers that minimise the extra distance compared to direct depot↔customer trips (Clarke-Wright savings analogue, batched)"
+  - "demand-density: prefer customers in regions of high unvisited-demand density, so the route covers many demand units per unit distance"
+  - "depot-anchor: balance distance to current node against distance back to depot — avoid drifting too far from depot when load is low"
+  - "first-customer-shape: keep the route shape coherent with the first_node direction; prefer customers whose angle from depot continues the started route"
+  - "frontier-priority: prefer customers on the convex-hull boundary of unvisited customers — visiting them early prevents leaving stranded outliers later"
+  - "radial-sweep: bias toward customers whose angle-from-depot is monotonically progressing in one rotational direction, producing arc-shaped routes"
+  - "demand-bundle-fit: at each step compute which subset of nearby feasible customers exactly fills remaining load, then prefer those that participate in tight fit-bundles"
+  - "load-conditional-distance: when load is high prefer FAR customers (push outward early), when load is low prefer NEAR-depot customers (efficient return)"
+  - "bimodal-pivot: detect angular bimodality of unvisited polar histogram; if current arm is nearly exhausted, prefer depot to enable arm switch rather than chasing stragglers"
+  - "nearest-line-of-sight: prefer customers that lie close to the line from current to depot, so the trip is on-the-way back"
+  - "demand-quartile-aware: prioritise high-demand customers when load is full, low-demand when load is partial — match demand size to remaining capacity slot"
+
+implement_system: |-
+  You are writing heuristic modules for the 2D Capacitated Vehicle Routing Problem (CVRP)
+  with ${problem_size} customers (+ 1 depot at index 0).
+
+  Your task is to write a Python module containing exactly one function:
+    heuristic(locs, demand, current_node, mask, visited, load, first_node) -> torch.Tensor [B, N+1]
+
+  ${context}
+
+  Rules:
+  - Imports allowed: torch, torch.nn.functional as F, math. Nothing else.
+  - All tensor operations must be batched (first dimension is batch size B).
+  - Output shape MUST be [B, N+1] = [B, ${n_plus_1}]. Index 0 is the depot.
+  - Coordinates are in [0,1]^2. Demand of any customer < 1 (so the depot is reachable).
+  - No file I/O, network access, environment access, printing, or side effects.
+  - Do not modify input tensors in-place.
+  - Hard constraint: NO Python `for` loops over batch (`for b in range(B)`) or
+    nodes. NO `while` loops. NO permutation enumeration. All ops batched.
+  - MEMORY LIMIT (hard): never materialize a tensor with more than TWO node axes.
+    Pairwise [B, N+1, N+1] is the MAXIMUM allowed. NEVER build [B, N+1, N+1, N+1]
+    or enumerate node triples / 3-hop (j->k->m) lookahead — that is O(B·N^3) and
+    OOMs at the training batch size. Reason one step ahead (per-node [B, N+1]) or
+    pairwise [B, N+1, N+1] at most.
+  - No PARAMS dict required. Embed constants directly in code.
+
+  Return a torch.Tensor of shape [B, N+1] with finite scores for every node (mask is
+  applied outside). Return ONLY the complete Python module, no explanation, no fences.
+
+implement_user: |-
+  Implement the following CVRP heuristic strategy as a Python module.
+
+  Strategy: ${strategy}
+
+  Use this structure as a starting template:
+  ${template}
+
+template: |-
+  import math
+  import torch
+  import torch.nn.functional as F
+
+  def heuristic(locs, demand, current_node, mask, visited, load, first_node):
+      """
+      CVRP next-node scoring heuristic.
+      Args:
+          locs:         [B, N+1, 2]  coords of depot (idx 0) + N customers
+          demand:       [B, N+1]     demand per node (depot = 0)
+          current_node: [B]          index of node we're currently at
+          mask:         [B, N+1]     True = feasible (not visited & demand fits)
+          visited:      [B, N+1]     1.0 = customer already visited
+          load:         [B]          remaining vehicle capacity in [0, 1]
+          first_node:   [B]          first customer of this worker's route
+      Returns:
+          logits: [B, N+1]  finite raw scores (mask is applied outside)
+      """
+      B, N1, _ = locs.shape
+      device = locs.device
+      cur_loc = locs[torch.arange(B, device=device), current_node]      # [B, 2]
+      dist_to_cur = torch.norm(locs - cur_loc.unsqueeze(1), dim=-1)     # [B, N+1]
+      # Simple capacity-aware nearest: prefer close customers with demand
+      # that fits load comfortably, slight depot penalty so we don't
+      # bounce back unnecessarily.
+      capacity_slack = (load.unsqueeze(-1) - demand).clamp_min(0.0)     # [B, N+1]
+      fits_well = capacity_slack / load.unsqueeze(-1).clamp_min(1e-3)
+      logits = -dist_to_cur + 0.3 * fits_well
+      logits[:, 0] = logits[:, 0] - 0.5  # mild depot penalty
+      return logits
+
+fallback: |-
+  import torch
+
+  def heuristic(locs, demand, current_node, mask, visited, load, first_node):
+      """Capacity-aware nearest-feasible fallback.
+      - Score each node by negative distance from current.
+      - Apply a load-modulated depot penalty so we only return to depot
+        when load is genuinely low (load=1.0 → penalty 0.6, load=0.0 → penalty 0.0).
+        The mask outside this fn already filters infeasible customers, so we don't
+        need to manually demote them.
+      """
+      B, N1, _ = locs.shape
+      device = locs.device
+      cur_loc = locs[torch.arange(B, device=device), current_node]
+      dist_to_cur = torch.norm(locs - cur_loc.unsqueeze(1), dim=-1)
+      logits = -dist_to_cur
+      # Depot (idx 0): penalize proportional to remaining load — high load means
+      # the vehicle still has work to do and shouldn't return prematurely.
+      logits[:, 0] = logits[:, 0] - 0.6 * load
+      return logits
+
+backward_code_system: |-
+  You are the BACKWARD PASS of a TextGrad optimizer for CVRP next-node heuristics.
+  The problem has ${problem_size} customers in [0,1]^2 (+ 1 depot at index 0).
+
+  ${context}
+
+  You will see a heuristic function and one decision step where it picked a different
+  top-1 from the teacher. Produce a TEXT GRADIENT: a concise diagnosis of why the code's
+  score for the teacher's top-1 node fell behind its (wrong) argmax.
+
+  This is NOT a code fix. Output only a diagnosis in this exact format:
+  LOGIC: [what the code currently computes for ranking these top candidates]
+  TEACHER: [the teacher chose node X with ~95% mass — what about X (distance, demand
+            fit, capacity context) would the code recognize?]
+  FLAW: [why the code's score for X fell below the score for the (wrong) argmax]
+  DIRECTION: [what change would push X's score above the wrong argmax — focus on
+              making the winning gap larger and on capacity-aware reasoning]
+
+  Notation in the case data:
+    dcur, ddepot     = distance from current node and from depot
+    θ                = angle from depot, atan2(y-depot.y, x-depot.x), in degrees [-180°, 180°]
+    sav              = Clarke-Wright savings = dist_cur_to_depot + ddepot - dcur
+                       (high sav ⇒ candidate far from depot AND close to current,
+                        worth consolidating into the current trip; low sav ⇒ near-depot
+                        customer that's cheap to serve via a fresh loop)
+    unvisited θ list = sorted angles of all unvisited customers around the depot;
+                       large gaps in the sorted sequence indicate arm boundaries
+                       (${teacher} routes are angular slices from the depot — bimodal
+                        patterns often signal the need to pivot via depot)
+
+  Be concrete about geometry AND capacity (distances, demand, remaining load,
+  infeasible alternatives). 2-5 sentences total. No code.
+
+backward_code_user: |-
+  Heuristic code:
+      ${code}
+
+      Failure case [KL(teacher‖heuristic)=${kl}]:
+
+      ${case}
+
+      Now produce the LOGIC / TEACHER / FLAW / DIRECTION diagnosis.
+
+backward_desc_system: |-
+  You are the BACKWARD PASS of a TextGrad optimizer for CVRP heuristic descriptions.
+  The problem has ${problem_size} customers in [0,1]^2 (+ 1 depot at index 0).
+
+  ${context}
+
+  Given a heuristic's natural language description and a decision step where the heuristic
+  picked the wrong top-1, produce a TEXT GRADIENT: what does the description fail to capture
+  about the CVRP geometry / capacity / depot timing that would help the implementation pick
+  the right top-1 next time?
+
+  Format:
+  MISSING: [what reasoning the description omits or under-emphasises (e.g. capacity
+            slack, demand fit, depot timing, route-shape considerations)]
+  MISLEADING: [anything in the description that points the implementation in the wrong direction]
+  DIRECTION: [how the description should be revised — focus on the top-1 ranking]
+
+  2-4 sentences. No code.
+
+backward_desc_user: |-
+  Heuristic description: "${description}"
+
+      Heuristic code:
+      ${code}
+
+      Failure case [KL=${kl}]:
+        ${case}
+
+      Generate the text gradient for the DESCRIPTION (not the code).
+      Highlight what geometric/polar-distribution/capacity/depot-timing reasoning the
+      description should add or revise to push the implementation toward the teacher's pick.
+
+optimizer_system: |-
+  You are part of an optimization system that improves Python heuristic functions for CVRP
+  next-node selection with ${problem_size} customers in [0,1]^2.
+
+  ${context}
+
+  You will receive the current heuristic code and text gradients (diagnoses of failure cases).
+  Your task: synthesize the gradients and produce an improved version of the code that picks
+  the teacher's top-1 node more often (and at least keeps it in the top-2 when it can't win).
+
+  - Address the most common and severe failure patterns across all gradients
+  - Momentum gradients indicate persistent failure modes — high priority
+  - **Sharpen the winning gap.** If the top scores are too close, increase the multiplier
+    on the dominant signal so the winner pulls ahead more decisively after softmax.
+  - Keep the function signature
+    `heuristic(locs, demand, current_node, mask, visited, load, first_node) -> torch.Tensor [B, N+1]`
+    unchanged.
+  - Imports: torch, torch.nn.functional as F, math only
+  - Hard constraint: NO Python `for` loops over batch or nodes. NO `while` loops.
+    All ops vectorized.
+  - MEMORY LIMIT (hard): max tensor rank is pairwise [B, N+1, N+1]. NEVER build
+    [B, N+1, N+1, N+1] or any node-triple / 3-hop (j->k->m) lookahead — it is
+    O(B·N^3) and OOMs at the training batch size. One-step or pairwise only.
+  - N = ${problem_size}. Output shape MUST be [B, ${n_plus_1}]. Embed constants
+    directly. No markdown fences.
+  - Prefer simplicity. A 6-line scorer that picks top-1 right is better than a 60-line blend.
+
+  Put the improved Python module between {new_variable_start_tag} and {new_variable_end_tag}.
+
+describe_system: |-
+  You are an expert in vehicle routing. Describe heuristic strategies concisely in plain language.
+
+describe_user: |-
+  Below is a Python heuristic function for CVRP next-node selection
+      with ${problem_size} customers in [0,1]^2 (depot at index 0).
+      Write a 1-3 sentence natural-language description of the strategy.
+      Mention BOTH the geometric and the capacity-related reasoning. No code, no formulas.
+
+      ```python
+      ${code}
+      ```
+
+cluster_system: |-
+  You are auditing a CVRP heuristic bank for the ${problem_size}-customer
+          Capacitated Vehicle Routing Problem in [0,1]².
+
+          ${context}
+
+          Your job: find DISTINCT failure modes in a portfolio of failure cases (each
+          case is a step where NO heuristic in the bank picked the teacher's top-1)
+          and propose ONE targeted CVRP strategy per mode.
+
+          Constraints:
+          - Each strategy must combine geometric (distance, polar angle from depot,
+            polar histogram of unvisited customers, sectors around current, density)
+            AND capacity (load, demand fit, depot timing, Clarke-Wright savings) reasoning.
+          - Each strategy must NOT duplicate any existing bank heuristic — it should
+            fill a gap that the current bank misses.
+          - Prefer simple strategies that produce a CLEAR top-1 winner (sharp output).
+          - Pay attention to depot-anchored polar histogram of unvisited customers:
+            ${teacher} routes are angular slices ("route arms") emanating from the depot.
+            Bimodal histograms (e.g. lots of work in NE AND SW with little in between)
+            often need a "pivot" strategy: return to depot to switch arms rather than
+            chasing the few stragglers in the current arm.
+
+cluster_user: |-
+  Current bank:
+          ${frozen}
+
+          Below are the portfolio-failure cases (the bank as a whole picked
+          the wrong top-1 — i.e. teacher's top-1 was not in any heuristic's top-1):
+
+          ${summary}
+
+          Consider whether the depot-choice mismatches above suggest a "depot timing"
+          failure mode — bank too eager OR too late to return to depot. Forced-depot
+          cases are often trivial (mask handles it); proactive-depot cases reveal
+          whether bank lacks a "when to return" heuristic.
+
+          ${cases}
+
+          Identify ${n_modes} distinct FAILURE MODES. For each, return a JSON object
+          with these exact keys:
+
+            "mode_name":   short kebab-case identifier
+            "description": 1-2 sentences on the state pattern + why bank fails on it
+            "strategy":    1-3 sentences on a CVRP heuristic strategy targeting this mode
+            "case_indices": list of case numbers (1-indexed) in this mode
+
+          Output: a JSON list of ${n_modes} such objects. Wrap output in
+          ```json ... ``` markdown fences. Each object must be valid JSON.
+
+add_implement_system: |-
+  You are writing heuristic modules for the 2D Capacitated Vehicle Routing Problem (CVRP)
+  with ${problem_size} customers (+ 1 depot at index 0).
+
+  Your task is to write a Python module containing exactly one function:
+    heuristic(locs, demand, current_node, mask, visited, load, first_node) -> torch.Tensor [B, N+1]
+
+  ${context}
+
+  Rules:
+  - Imports allowed: torch, torch.nn.functional as F, math. Nothing else.
+  - All tensor operations must be batched (first dimension is batch size B).
+  - Output shape MUST be [B, N+1] = [B, ${n_plus_1}]. Index 0 is the depot.
+  - Coordinates are in [0,1]^2. Demand of any customer < 1 (so the depot is reachable).
+  - No file I/O, network access, environment access, printing, or side effects.
+  - Do not modify input tensors in-place.
+  - Hard constraint: NO Python `for` loops over batch (`for b in range(B)`) or
+    nodes. NO `while` loops. NO permutation enumeration. All ops batched.
+  - MEMORY LIMIT (hard): never materialize a tensor with more than TWO node axes.
+    Pairwise [B, N+1, N+1] is the MAXIMUM allowed. NEVER build [B, N+1, N+1, N+1]
+    or enumerate node triples / 3-hop (j->k->m) lookahead — that is O(B·N^3) and
+    OOMs at the training batch size. Reason one step ahead (per-node [B, N+1]) or
+    pairwise [B, N+1, N+1] at most.
+  - No PARAMS dict required. Embed constants directly in code.
+
+  Return a torch.Tensor of shape [B, N+1] with finite scores for every node (mask is
+  applied outside). Return ONLY the complete Python module, no explanation, no fences.
+
+add_implement_user: |-
+  Implement the following CVRP heuristic strategy as a Python module.
+
+  Strategy: ${strategy}
+
+  Use this structure as a starting template:
+  ${template}
+
+retry_lowhit: |-
+  That attempt covered only ${best_hit} of the held-out portfolio-fault samples — below the threshold.
+
+  Produce a STRUCTURALLY DIFFERENT vectorized formulation targeting the same failure pattern. It is fine if the new rule still covers only a subset of cases (specialists are valued), but it must reliably solve its target subset. Consider a different primitive entirely (e.g. if the prior attempt scored by distance from the current node, try the polar angle from the depot, the demand fit to the remaining load or Clarke-Wright savings, or vice versa).
+
+  Return ONLY the complete Python module. No commentary, no markdown fences, no backticks.
+
+retry_reject: |-
+  That module was REJECTED: ${reason}. Return a corrected complete module that satisfies every rule. No commentary, no markdown fences.
+
+textgrad:
+  code_role: |-
+    a Python function `heuristic(locs, demand, current_node, mask, visited, load, first_node) -> torch.Tensor [B, N+1]` for CVRP-${problem_size} next-node selection that minimises KL(teacher_policy ‖ heuristic) on top-1 picks.
+  desc_role: |-
+    a 1-3 sentence natural language description of a CVRP-${problem_size} next-node selection strategy combining geometry and capacity reasoning.
+  code_constraints:
+    - "Keep function signature `heuristic(locs, demand, current_node, mask, visited, load, first_node) -> [B,N+1]`."
+    - "Imports: torch, torch.nn.functional as F, math only. All ops batched. N+1=${n_plus_1}. No side effects."
+    - "MEMORY LIMIT (hard): max tensor rank is pairwise [B,N+1,N+1]. NEVER build [B,N+1,N+1,N+1] / node-triple / 3-hop lookahead (O(B·N^3), OOMs at training batch size). One-step or pairwise only."
+  desc_constraints:
+    - "1-3 sentences. Geometric AND capacity reasoning for ${problem_size}-customer CVRP. No code."

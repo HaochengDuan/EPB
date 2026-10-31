@@ -1,0 +1,50 @@
+{
+  "problem_size": 100,
+  "tau_h": 0.03,
+  "tau_r": 1.0,
+  "family": {
+    "slots": [
+      3,
+      5,
+      6
+    ],
+    "instrumented": {
+      "3": "h03",
+      "5": "h05",
+      "6": "h06"
+    },
+    "iso_part": {
+      "3": "outlier_nn",
+      "5": "iso",
+      "6": "iso1"
+    },
+    "excluded_terms": {
+      "H06_gap": [
+        6,
+        "gap"
+      ],
+      "H03_start": [
+        3,
+        "outlier_start"
+      ]
+    }
+  },
+  "n_remaining_min": 40,
+  "n_remaining_max": 90,
+  "states_per_instance": 12,
+  "seed": 20260802,
+  "coord_lo": 0.0,
+  "coord_hi": 1.0,
+  "chunk_instances": 32,
+  "conf_lo": 1000,
+  "conf_hi": 4000,
+  "K_primary": 50,
+  "I_threshold": 1.0,
+  "partner_margin": 0.001,
+  "min_node_sep": 0.002,
+  "attr_share_min": 0.5,
+  "rho": 0.1,
+  "bootstrap_B": 2000,
+  "perm_B": 5000,
+  "stats_seed": 20260802
+}

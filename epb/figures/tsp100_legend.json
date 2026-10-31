@@ -1,0 +1,19 @@
+{
+  "description": "One-line names of the programs of the TSP-100 student (epb/students/pomo_tsp100), by bank slot (position in bank.json), for the legend of `python -m epb.figures tour`.",
+  "names": {
+    "0": "NN + early isolated bonus",
+    "1": "NN + late: far-from-depot first",
+    "2": "4-phase: hull-sweep early",
+    "3": "NN + sigmoid-gated geom",
+    "4": "NN + isolated rescue",
+    "5": "NN + return-to-start penalty",
+    "6": "phase-adaptive 1-step lookahead",
+    "7": "NN + heading-direction bonus",
+    "8": "early geometric outlier focus",
+    "9": "angular sparse sectors + periphery",
+    "10": "regret of postponement (α↑)",
+    "11": "NN + mid-tour centroid pull",
+    "12": "4-signal weighted blend",
+    "13": "momentum + density (off late)"
+  }
+}

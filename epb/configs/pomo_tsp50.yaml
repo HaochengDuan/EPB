@@ -1,0 +1,9 @@
+# POMO teacher, TSP-50. The teacher checkpoint (yd-kwon/POMO format) is not part of this package.
+setting: {name: pomo_tsp}
+run: {output_dir: runs/pomo_tsp50, seed: 42}
+data: {path: data/pomo_tsp50_steps.pt}
+generate: {teacher_ckpt: <POMO_TSP50_CKPT>, problem_size: 50, num_instances: 100000}
+bank: {num_programs: 15, tau_h: 0.2}
+router: {num_layers: 3}
+train: {epochs: 80, batch_size: 4096, lr: 6.0e-4}
+llm: {model: deepseek-v4-pro, reasoning_effort: none, max_workers: 16, max_cost_usd: 40, price_input: 0.66, price_output: 1.98, price_cache_read: 0.022}

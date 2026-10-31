@@ -1,0 +1,394 @@
+context: |-
+  **${teacher} setting (variable K, you DO score depot):**
+    - You see the unvisited customer subgraph (K customers).  K varies (1..N-1).
+    - Vehicle capacity is 1.0 (normalised).  load[b] ∈ [0, 1] is what's left now.
+    - feasibility_mask[b, k] = True iff demand[b, k] ≤ load[b].
+    - Output shape is [B, K+1]:
+        * positions [0..K-1]: per-customer logits (infeasible MUST be -inf).
+          Position k MUST correspond to the customer at unselected_locs[b, k] —
+          do NOT sort, permute, or reorder.
+        * position K (last):  the depot logit — vote for "return to depot now".
+    - The router mixes your output with other heuristics' outputs over a unified
+      [N+1] action space (depot + N customers); your depot logit competes with
+      other heuristics' depot logits.  Boost it when load is low, when the route
+      arm is exhausted, when no customer fits cleanly, etc.
+    - **At-depot edge case is handled by the framework**: when current_loc equals
+      depot_loc (vehicle just returned to depot), the framework forces your depot
+      logit to -inf before the softmax (depot can't be selected from depot).  You
+      don't need to detect this case yourself — output any depot logit you like,
+      it will be overridden in those rows.
+
+  **Teacher distribution is moderately peaked, NOT one-hot.** The ${teacher}
+  greedy teacher is genuinely uncertain on many steps — especially early in a
+  route when many customers are still unvisited (K large):
+      - top-1 of [customers, depot] typically gets ~0.70-0.82 probability
+        (and only ~0.65 on the hard, ambiguous steps where heuristics fail)
+      - top-2 gets ~0.10, top-3 ~0.05; a real tail carries the rest
+      - it sharpens toward one-hot only LATE in a route (K small) when the
+        remaining choice is essentially forced
+    Two implications for heuristic design:
+      (i) MATCH the teacher's confidence, do NOT exceed it.  After softmax with
+          τ=${tau_h} your output should be moderately peaked, NOT near-one-hot.
+          Over-sharp scores (≈99% on one node) get punished hard on the many
+          steps where the teacher only commits ~70%: they inflate KL and FLIP
+          top-1 on exactly the ambiguous states that decide the result.
+      (ii) Capture the teacher's MASS, not just its argmax.  Getting top-1 right
+           WHILE keeping the teacher's top-2/top-3 alive (real probability, not
+           crushed to ~0) is what lowers KL.  A scorer that ranks the right few
+           candidates near the top beats one that bets everything on one pick.
+    Heuristics are evaluated on:
+      (a) KL to the full teacher distribution  (primary)
+      (b) whether their argmax matches the teacher's argmax  (secondary)
+    Do NOT collapse the output to one-hot — that is the #1 failure mode here.
+
+  **Reason over GEOMETRY, not over node ids.** Candidates have no stable
+  identifier — your code receives a [B, K, 2] block of customer xy and an [B, K]
+  block of demand, and any local index k is meaningful only relative to *this*
+  batch row.  When diagnosing failures or designing strategies, talk in terms of:
+      - positions (xy in [0,1]^2)
+      - demands and remaining load
+      - polar coords from depot (θ, r) — exposes route arms / arm bimodality
+      - distance to current (dcur), distance to depot (ddepot)
+      - Clarke-Wright savings = ddepot_self + ddepot_cur − dcur
+    NOT in terms of "node 7" or "customer 23" — those are batch-local accidents.
+
+idea_system: |-
+  You are an ${teacher} expert.  Variable K customers + 1 depot decision.
+
+  ${context}
+
+  Describe ONE strategy (1-3 sentences) covering BOTH:
+    - how to rank unvisited customers (geometry + capacity)
+    - WHEN to vote depot (capacity exhaustion, arm-pivot, on-the-way-back, …)
+
+  Avoid restating an existing strategy.  No code.
+
+idea_user: |-
+  Existing strategies so far (avoid duplicating): ${existing}.
+
+  Proposed seed for new strategy: ${direction}
+
+  Produce ONE strategy description (1-3 sentences).
+
+seeds:
+  - "nearest-feasible-with-forced-depot: closest feasible customer wins; depot vote spikes only when no customer is feasible"
+  - "snug-fit-with-low-load-depot: feasible customer whose demand fills the largest fraction of remaining load; depot vote rises smoothly as load drops below ~0.2"
+  - "load-conditional-distance: when load is high prefer FAR customers (push outward); low load prefer NEAR customers; depot vote scales with (1-load)"
+  - "savings-style-with-arm-pivot: rank by Clarke-Wright savings; depot vote rises when remaining unvisited cluster is closer to depot than to current (arm done, pivot)"
+  - "depot-anchor-with-radial-recall: penalise drifting far from depot when load is low; vote depot when ddepot < dcur AND load < 0.5"
+  - "cluster-density-with-cleanup-depot: prefer customers in dense regions; depot vote rises when only sparse outliers remain"
+  - "first-arc-coherence: prefer customers whose angle-from-depot continues the first-customer arc; depot vote when angle bimodality is strong (need arm switch)"
+  - "high-demand-when-full-low-when-empty: load-modulated demand preference; depot vote when no demand fits cleanly"
+  - "frontier-priority-then-loop-back: outer (high-radius) customers early; depot vote when only near-depot customers remain"
+  - "line-of-sight-to-depot: customers on the line current→depot get bonus; depot vote when current is heading depot-ward and load < 0.4"
+  - "demand-fit-vs-distance: blend distance penalty with demand-fits-load bonus, sharpened; depot vote inversely with capacity slack"
+  - "bimodal-pivot: when angular bimodality is strong, score depot HIGH (let router refill + switch arms) rather than chasing stragglers"
+
+implement_system: |-
+  You write Python heuristic modules for a 2D CVRP with ${problem_size} customers.
+  At each step you score K unvisited customers AND the depot decision.
+
+  Function signature (must match exactly):
+    heuristic(unselected_locs, unselected_demand, current_loc, depot_loc,
+              load, feasibility_mask) -> torch.Tensor [B, K+1]
+
+  Args:
+    unselected_locs:    [B, K, 2]  customer xy in [0,1]^2
+    unselected_demand:  [B, K]     customer demand (each ≤ 1.0)
+    current_loc:        [B, 2]     current vehicle position
+    depot_loc:          [B, 2]     depot position
+    load:               [B]        remaining capacity in [0, 1]
+    feasibility_mask:   [B, K]     bool, True iff demand ≤ load
+
+  ${context}
+
+  Rules:
+    - Imports allowed: torch, torch.nn.functional as F, math.  Nothing else.
+    - All ops batched.  K is variable; never hard-code it.
+    - Output shape MUST be [B, K+1].
+        * customer positions [0..K-1]: infeasible MUST be float("-inf").
+        * depot position K (last):     MUST be finite (depot is always a valid action).
+    - No Python `for`/`while` loops over B or K.  No side effects.
+    - Concatenate using `torch.cat([cust_logits, depot_logit.unsqueeze(-1)], dim=-1)`.
+
+  Return only the complete Python module, no explanation, no markdown fences.
+
+implement_user: |-
+  Strategy:
+  ${strategy}
+
+  Implement this as the heuristic function described in the system prompt. Return the complete module.
+
+template: |
+  import torch
+  import torch.nn.functional as F
+  import math
+
+
+  def heuristic(unselected_locs, unselected_demand, current_loc, depot_loc,
+                load, feasibility_mask):
+      """Score each unvisited customer (K logits) AND the depot decision (1 logit).
+
+      Args:
+          unselected_locs:    torch.Tensor [B, K, 2]
+          unselected_demand:  torch.Tensor [B, K]
+          current_loc:        torch.Tensor [B, 2]
+          depot_loc:          torch.Tensor [B, 2]
+          load:               torch.Tensor [B]   remaining capacity, in [0, 1]
+          feasibility_mask:   torch.Tensor [B, K] bool  (True = demand ≤ load)
+
+      Returns:
+          torch.Tensor [B, K+1] of logits.  Higher = preferred.
+          - positions [0..K-1]: per-customer logits.  Infeasible MUST be float("-inf").
+          - position K (last):  depot logit.  Boost it when the vehicle should refill
+                                (e.g. low load with no good fit, arm exhausted, etc.).
+
+      K is variable across batches; never hard-code it.
+      """
+      raise NotImplementedError
+
+fallback: |
+  import torch
+  import torch.nn.functional as F
+  import math
+
+
+  def heuristic(unselected_locs, unselected_demand, current_loc, depot_loc,
+                load, feasibility_mask):
+      # Nearest-feasible-customer fallback with a load-modulated depot vote.
+      d = ((unselected_locs - current_loc.unsqueeze(1)) ** 2).sum(-1).sqrt()
+      cust = (-10.0 * d).masked_fill(~feasibility_mask, float("-inf"))
+      # Depot vote: low when load is high (still want to deliver), high when load is low.
+      depot = (-10.0 * load + 5.0).unsqueeze(-1)             # [B, 1]
+      return torch.cat([cust, depot], dim=-1)                # [B, K+1]
+
+backward_code_system: |-
+  You are the BACKWARD PASS of a TextGrad optimizer for ${teacher} heuristics.
+  The heuristic outputs [B, K+1]: K customer logits + 1 depot logit.
+
+  ${context}
+
+  You see a heuristic and one decision step where its top-1 of (customers + depot)
+  differs from the teacher's top-1.  The case includes BOTH:
+    - heuristic_top1: either a customer (local_k) OR depot
+    - teacher_top1:   either a customer (local_k) OR depot
+
+  Produce a TEXT GRADIENT, no code:
+
+  LOGIC:    [what your code currently does for both customer scoring AND depot voting]
+  TEACHER:  [the teacher chose <X> — what features (distance, demand fit, load,
+             depot anchor, route arm) would the code recognise?  if teacher chose
+             depot, focus on capacity / arm-exhaustion signals]
+  FLAW:     [why the code's score for <X> lost to its (wrong) argmax]
+  DIRECTION: [what change would lift <X> to match the teacher — adjust the
+              RELATIVE gap to the teacher's confidence level (do NOT over-sharpen
+              into one-hot); capacity-aware / arm-pivot reasoning preferred]
+
+  Notation:
+    dcur     = distance from current
+    ddepot   = distance from depot
+    cw_sav   = Clarke-Wright savings = ddepot_self + ddepot_cur − dcur
+               (high → consolidate into trip; low → cheap depot loop)
+    load     = remaining capacity at this step
+    K        = number of unvisited customers (varies per row)
+    depot_logit = your last output position; high = vote for depot now
+
+  Be concrete about geometry AND capacity.  Focus on why <X> lost to the wrong
+  argmax — usually a feature-weighting or relative-gap issue — WITHOUT crushing
+  the rest of the distribution to zero (the teacher keeps a real top-2/top-3).
+  Reason over positions, polar coords, distances, demand, load, savings — NOT
+  over node ids.  2-5 sentences.  No code.
+
+backward_code_user: |-
+  Heuristic code:
+      ${code}
+
+      Failure case [KL(teacher_full ‖ heuristic_full)=${kl}]:
+
+  ${case}
+
+      Reason in geometric terms (positions, distances, polar coords, demand,
+      savings) and capacity terms (load, demand fit) — NOT in terms of ids.
+
+      Now produce the LOGIC / TEACHER / FLAW / DIRECTION diagnosis.
+
+backward_desc_system: |-
+  You are the BACKWARD PASS for the natural-language DESCRIPTION of an ${teacher}
+  heuristic (which scores K customers + 1 depot decision).
+
+  ${context}
+
+  Given the description and a top-1 mismatch case, produce a TEXT GRADIENT:
+  MISSING:    [what reasoning the description omits (capacity slack, depot timing,
+               arm coherence, when to vote depot, density of unvisited cluster, …)]
+  MISLEADING: [anything in the description that points the wrong way]
+  DIRECTION:  [how the description should be revised — keep it 1-3 sentences;
+               must cover BOTH customer ranking AND when to vote depot]
+
+  No code. 2-4 sentences.
+
+backward_desc_user: |-
+  Description: ${description}
+
+      Code (for reference):
+      ${code}
+
+      Failure case [KL=${kl}]:
+  ${case}
+
+      Reason in geometric + capacity terms only (positions, polar coords, demand,
+      load, savings).  Candidates have NO stable identifier — do not use ids.
+
+      Produce the MISSING / MISLEADING / DIRECTION diagnosis for the description.
+
+optimizer_system: |-
+  You improve Python heuristic functions for ${teacher} — score K customers AND vote depot.
+
+  ${context}
+
+  You receive the current code and text gradients (failure diagnoses).  Synthesize
+  them and produce an improved version that picks the teacher's top-1 of (customers,
+  depot) more often.
+
+  - Address recurring / momentum-flagged failure patterns first
+  - Match the teacher's confidence: after softmax with τ=${tau_h} the output should be
+    MODERATELY peaked, NOT near-one-hot.  Do not over-sharpen — putting ~99% on
+    one node inflates KL and flips top-1 on the many steps where the teacher only
+    commits ~70%.  Keep the teacher's top-2/top-3 candidates alive.
+  - Keep signature
+    `heuristic(unselected_locs, unselected_demand, current_loc, depot_loc,
+              load, feasibility_mask) -> torch.Tensor [B, K+1]`
+  - Last output position is the depot logit — must always be finite
+  - Imports: torch, torch.nn.functional as F, math only
+  - All ops batched; no Python loops over B or K
+  - Infeasible customer positions: float("-inf")
+  - Prefer simplicity. A simple scorer that ranks the right FEW candidates near
+    the top beats a complex one that over-commits to a single pick.
+
+  Put the improved Python module between {new_variable_start_tag} and
+  {new_variable_end_tag}.
+
+describe_system: |-
+  You are an expert in vehicle routing. Describe heuristic strategies concisely in plain language.
+
+describe_user: |-
+  Below is a Python heuristic function for CVRP next-node selection with ${problem_size} customers in [0,1]^2 (depot at index 0).
+  Write a 1-3 sentence natural-language description of the strategy. Mention BOTH the geometric and the capacity-related reasoning. No code, no formulas.
+
+  ```python
+  ${code}
+  ```
+
+textgrad:
+  code_role: |-
+    Python function `heuristic(unselected_locs, unselected_demand, current_loc, depot_loc, load, feasibility_mask) -> torch.Tensor [B, K+1]` for ${teacher_family}-style CVRP — first K outputs are customer logits (infeasible -inf), last output is the depot logit (always finite). Trained on CVRP-${problem_size}; must work for any K ∈ [1, ${k_max}]. Imports: torch, F, math. All ops batched.
+  desc_role: |-
+    1-3 sentence natural-language strategy describing BOTH (a) customer ranking AND (b) when to vote depot, for ${teacher_family}-style CVRP-${problem_size} variable K.
+  code_constraints:
+    - "Keep the function signature `heuristic(unselected_locs, unselected_demand, current_loc, depot_loc, load, feasibility_mask) -> [B, K+1]`."
+    - "Last output (position K) is the depot logit and MUST be finite. Customer positions [0..K-1]: infeasible MUST be float('-inf')."
+    - "Imports: torch, torch.nn.functional as F, math only. All ops batched. Code must work for any K ∈ [1, N-1]. No side effects."
+  desc_constraints:
+    - "1-3 sentences. MUST cover both customer ranking AND when to vote depot. Reasoning over the unvisited subgraph and capacity. Variable K. No code."
+
+cluster_system: |-
+  You are auditing a bank of heuristic programs for the ${problem_size}-customer
+  Capacitated Vehicle Routing Problem in [0,1]², in the ${teacher_family}-style
+  sub-problem formulation: at each step a program scores the K unvisited customers
+  AND the depot decision (output [B, K+1], depot logit last).
+
+  ${context}
+
+  Your job: find DISTINCT failure modes in a set of failure cases (each case is a
+  decision step where NO program in the bank puts its top-1 on the teacher's
+  top-1 over customers + depot) and propose ONE targeted strategy per mode.
+
+  Constraints:
+  - Each strategy must combine geometric (distance to current, distance to depot,
+    polar angle from depot, Clarke-Wright savings, density of the unvisited
+    customers) AND capacity (load, demand fit, depot timing) reasoning.
+  - Each strategy must cover BOTH how to rank the unvisited customers AND when to
+    vote depot.
+  - Each strategy must NOT duplicate any existing program — it should fill a gap
+    that the current bank misses.
+  - Prefer simple strategies that rank the teacher's top few candidates near the
+    top, moderately peaked: do NOT bet everything on a single pick.
+  - Pay attention to the depot-anchored polar angles of the unvisited customers:
+    routes are angular slices ("route arms") emanating from the depot. A bimodal
+    angle list (lots of work in two separated sectors) often needs a "pivot"
+    strategy: vote depot to switch arms rather than chasing the few stragglers
+    left in the current arm.
+
+cluster_user: |-
+  Current bank (existing strategies, do NOT propose a duplicate):
+  ${frozen}
+
+  Below are failure cases of the bank: decision steps where the teacher's top-1 (a
+  customer or the depot) is NOT the top-1 of any program. Candidates are described
+  by geometry only (no stable ids); the BANK lines show the top-2 of the programs'
+  mean distribution and the programs' top-1 votes.
+
+  ${summary}
+
+  Consider whether the depot-choice statistics above suggest a "depot timing"
+  failure mode — the bank returning to the depot too eagerly OR too late.
+  Proactive-depot cases (the teacher returns although a customer still fits)
+  reveal whether the bank lacks a "when to return" heuristic.
+
+  ${cases}
+
+  Identify ${n_modes} distinct FAILURE MODES. For each, return a JSON object with
+  these exact keys:
+
+    "name":     short kebab-case identifier
+    "strategy": 1-3 sentences on a heuristic strategy targeting this mode, covering
+                BOTH customer ranking AND when to vote depot (geometric + capacity
+                reasoning; no code, no formulas)
+
+  Output: a JSON list of ${n_modes} such objects. Wrap output in ```json ... ```
+  markdown fences. Each object must be valid JSON.
+
+add_implement_system: |-
+  You write Python heuristic modules for a 2D CVRP with ${problem_size} customers.
+  At each step you score K unvisited customers AND the depot decision.
+
+  Function signature (must match exactly):
+    heuristic(unselected_locs, unselected_demand, current_loc, depot_loc,
+              load, feasibility_mask) -> torch.Tensor [B, K+1]
+
+  Args:
+    unselected_locs:    [B, K, 2]  customer xy in [0,1]^2
+    unselected_demand:  [B, K]     customer demand (each ≤ 1.0)
+    current_loc:        [B, 2]     current vehicle position
+    depot_loc:          [B, 2]     depot position
+    load:               [B]        remaining capacity in [0, 1]
+    feasibility_mask:   [B, K]     bool, True iff demand ≤ load
+
+  ${context}
+
+  Rules:
+    - Imports allowed: torch, torch.nn.functional as F, math.  Nothing else.
+    - All ops batched.  K is variable; never hard-code it.
+    - Output shape MUST be [B, K+1].
+        * customer positions [0..K-1]: infeasible MUST be float("-inf").
+        * depot position K (last):     MUST be finite (depot is always a valid action).
+    - No Python `for`/`while` loops over B or K.  No side effects.
+    - Concatenate using `torch.cat([cust_logits, depot_logit.unsqueeze(-1)], dim=-1)`.
+
+  Return only the complete Python module, no explanation, no markdown fences.
+
+add_implement_user: |-
+  Strategy:
+  ${strategy}
+
+  Implement this as the heuristic function described in the system prompt. Return the complete module.
+
+retry_lowhit: |-
+  That attempt covered only ${best_hit} of the held-out fault cases of its mode — below the threshold.
+
+  Produce a STRUCTURALLY DIFFERENT vectorized formulation targeting the same failure pattern. It is fine if the new rule still covers only a subset of cases (specialists are valued), but it must reliably pick the teacher's action — a customer or the depot — on its target subset. Consider a different geometric primitive entirely (e.g. if the prior attempt used distance-based scoring, try angle/projection/savings-based scoring, or vice versa), and revisit when the depot logit should win.
+
+  Return ONLY the complete Python module. No commentary, no markdown fences, no backticks.
+
+retry_reject: |-
+  That module was REJECTED: ${reason}. Return a corrected complete module that satisfies every rule (the signature, a [B, K+1] output for any K, float("-inf") at infeasible customers, a finite depot logit in the last position, batched ops only). No commentary, no markdown fences.

@@ -1,0 +1,13 @@
+__pycache__/
+logs/
+runs/
+data/
+results/
+eval_instances/
+NCO_code/
+paths.json
+*.pt
+!epb/students/**/*.pt
+!epb/baselines/**/*.pt
+!epb/figures/*.pt
+!epb/interventions/**/*.pt

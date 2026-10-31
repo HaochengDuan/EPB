@@ -1,0 +1,54 @@
+{
+ "heuristics": [
+  {
+   "index": 0,
+   "description": "",
+   "code": "import torch\nimport torch.nn.functional as F\nimport math\n\ndef heuristic(locs, current_node, mask, visited, step_norm, first_node):\n    m = mask.bool()\n    B = m.shape[0]\n    cur = locs.gather(1, current_node.view(B, 1, 1).expand(B, 1, 2)).squeeze(1)\n    d_ci = (locs - cur.unsqueeze(1)).norm(dim=-1)\n    z = -d_ci\n    return z.masked_fill(~m, -1e9)\n"
+  },
+  {
+   "index": 1,
+   "description": "",
+   "code": "import torch\nimport torch.nn.functional as F\nimport math\n\ndef heuristic(locs, current_node, mask, visited, step_norm, first_node):\n    m = mask.bool()\n    B = m.shape[0]\n    cur = locs.gather(1, current_node.view(B, 1, 1).expand(B, 1, 2)).squeeze(1)\n    st = locs.gather(1, first_node.view(B, 1, 1).expand(B, 1, 2)).squeeze(1)\n    d_ci = (locs - cur.unsqueeze(1)).norm(dim=-1)\n    d_is = (locs - st.unsqueeze(1)).norm(dim=-1)\n    d_cs = (cur - st).norm(dim=-1).unsqueeze(1)\n    z = -(d_ci + d_is - d_cs)\n    return z.masked_fill(~m, -1e9)\n"
+  },
+  {
+   "index": 2,
+   "description": "",
+   "code": "import torch\nimport torch.nn.functional as F\nimport math\n\ndef heuristic(locs, current_node, mask, visited, step_norm, first_node):\n    m = mask.bool()\n    B, N = m.shape\n    cur = locs.gather(1, current_node.view(B, 1, 1).expand(B, 1, 2)).squeeze(1)\n    d_ci = (locs - cur.unsqueeze(1)).norm(dim=-1)\n    BIG = 1e9\n    D = torch.cdist(locs, locs)\n    eye = torch.eye(N, dtype=torch.bool, device=locs.device).unsqueeze(0)\n    Dj = D.masked_fill(~m.unsqueeze(1), BIG).masked_fill(eye, BIG)\n    nxt = Dj.min(dim=-1).values\n    nxt = torch.where(nxt >= 0.5 * BIG, torch.zeros_like(nxt), nxt)\n    z = -(d_ci + nxt)\n    return z.masked_fill(~m, -1e9)\n"
+  },
+  {
+   "index": 3,
+   "description": "",
+   "code": "import torch\nimport torch.nn.functional as F\nimport math\n\ndef heuristic(locs, current_node, mask, visited, step_norm, first_node):\n    m = mask.bool()\n    B, N = m.shape\n    cur = locs.gather(1, current_node.view(B, 1, 1).expand(B, 1, 2)).squeeze(1)\n    st = locs.gather(1, first_node.view(B, 1, 1).expand(B, 1, 2)).squeeze(1)\n    d_ci = (locs - cur.unsqueeze(1)).norm(dim=-1)\n    d_is = (locs - st.unsqueeze(1)).norm(dim=-1)\n    BIG = 1e9\n    D = torch.cdist(locs, locs)\n    eye = torch.eye(N, dtype=torch.bool, device=locs.device).unsqueeze(0)\n    cost = D + d_is.unsqueeze(1)\n    cost = cost.masked_fill(~m.unsqueeze(1), BIG).masked_fill(eye, BIG)\n    best = cost.min(dim=-1).values\n    best = torch.where(best >= 0.5 * BIG, d_is, best)\n    z = -(d_ci + best)\n    return z.masked_fill(~m, -1e9)\n"
+  },
+  {
+   "index": 4,
+   "description": "",
+   "code": "import torch\nimport torch.nn.functional as F\nimport math\n\ndef _mnorm(x, m):\n    inf = torch.full_like(x, float(\"inf\"))\n    lo = torch.where(m, x, inf).min(dim=-1, keepdim=True).values\n    hi = torch.where(m, x, -inf).max(dim=-1, keepdim=True).values\n    lo = torch.nan_to_num(lo, nan=0.0, posinf=0.0, neginf=0.0)\n    hi = torch.nan_to_num(hi, nan=0.0, posinf=0.0, neginf=0.0)\n    out = (x - lo) / (hi - lo).clamp_min(1e-8)\n    out = torch.nan_to_num(out, nan=0.0, posinf=1.0, neginf=0.0)\n    return out.clamp(0.0, 1.0) * m.to(x.dtype)\n\ndef heuristic(locs, current_node, mask, visited, step_norm, first_node):\n    m = mask.bool()\n    B = m.shape[0]\n    cur = locs.gather(1, current_node.view(B, 1, 1).expand(B, 1, 2)).squeeze(1)\n    d_ci = (locs - cur.unsqueeze(1)).norm(dim=-1)\n    w = m.to(locs.dtype)\n    cnt = w.sum(dim=-1, keepdim=True).clamp_min(1.0)\n    mu = (locs * w.unsqueeze(-1)).sum(dim=1) / cnt\n    r = (locs - mu.unsqueeze(1)).norm(dim=-1)\n    p = step_norm.view(B, 1).clamp(0.0, 1.0)\n    z = (1.0 - p) * _mnorm(r, m) + p * _mnorm(-d_ci, m)\n    return z.masked_fill(~m, -1e9)\n"
+  },
+  {
+   "index": 5,
+   "description": "",
+   "code": "import torch\nimport torch.nn.functional as F\nimport math\n\ndef heuristic(locs, current_node, mask, visited, step_norm, first_node):\n    m = mask.bool()\n    B = m.shape[0]\n    cur = locs.gather(1, current_node.view(B, 1, 1).expand(B, 1, 2)).squeeze(1)\n    w = m.to(locs.dtype)\n    cnt = w.sum(dim=-1, keepdim=True).clamp_min(1.0)\n    mu = (locs * w.unsqueeze(-1)).sum(dim=1) / cnt\n    vc = cur - mu\n    vi = locs - mu.unsqueeze(1)\n    ang_c = torch.atan2(vc[:, 1], vc[:, 0]).unsqueeze(1)\n    ang_i = torch.atan2(vi[..., 1], vi[..., 0])\n    z = -torch.remainder(ang_c - ang_i, 2.0 * math.pi)\n    return z.masked_fill(~m, -1e9)\n"
+  },
+  {
+   "index": 6,
+   "description": "",
+   "code": "import torch\nimport torch.nn.functional as F\nimport math\n\ndef heuristic(locs, current_node, mask, visited, step_norm, first_node):\n    m = mask.bool()\n    B = m.shape[0]\n    cur = locs.gather(1, current_node.view(B, 1, 1).expand(B, 1, 2)).squeeze(1)\n    w = m.to(locs.dtype)\n    cnt = w.sum(dim=-1, keepdim=True).clamp_min(1.0)\n    mu = (locs * w.unsqueeze(-1)).sum(dim=1) / cnt\n    vc = cur - mu\n    vi = locs - mu.unsqueeze(1)\n    ang_c = torch.atan2(vc[:, 1], vc[:, 0]).unsqueeze(1)\n    ang_i = torch.atan2(vi[..., 1], vi[..., 0])\n    z = -torch.remainder(ang_i - ang_c, 2.0 * math.pi)\n    return z.masked_fill(~m, -1e9)\n"
+  },
+  {
+   "index": 7,
+   "description": "",
+   "code": "import torch\nimport torch.nn.functional as F\nimport math\n\ndef _mnorm(x, m):\n    inf = torch.full_like(x, float(\"inf\"))\n    lo = torch.where(m, x, inf).min(dim=-1, keepdim=True).values\n    hi = torch.where(m, x, -inf).max(dim=-1, keepdim=True).values\n    lo = torch.nan_to_num(lo, nan=0.0, posinf=0.0, neginf=0.0)\n    hi = torch.nan_to_num(hi, nan=0.0, posinf=0.0, neginf=0.0)\n    out = (x - lo) / (hi - lo).clamp_min(1e-8)\n    out = torch.nan_to_num(out, nan=0.0, posinf=1.0, neginf=0.0)\n    return out.clamp(0.0, 1.0) * m.to(x.dtype)\n\ndef heuristic(locs, current_node, mask, visited, step_norm, first_node):\n    m = mask.bool()\n    B = m.shape[0]\n    cur = locs.gather(1, current_node.view(B, 1, 1).expand(B, 1, 2)).squeeze(1)\n    st = locs.gather(1, first_node.view(B, 1, 1).expand(B, 1, 2)).squeeze(1)\n    d_ci = (locs - cur.unsqueeze(1)).norm(dim=-1)\n    u = cur - st\n    v = locs - cur.unsqueeze(1)\n    un = u.norm(dim=-1, keepdim=True).clamp_min(1e-8)\n    vn = v.norm(dim=-1).clamp_min(1e-8)\n    a = (u.unsqueeze(1) * v).sum(dim=-1) / (un * vn)\n    z = _mnorm(a, m) + _mnorm(-d_ci, m)\n    return z.masked_fill(~m, -1e9)\n"
+  },
+  {
+   "index": 8,
+   "description": "",
+   "code": "import torch\nimport torch.nn.functional as F\nimport math\n\ndef _mnorm(x, m):\n    inf = torch.full_like(x, float(\"inf\"))\n    lo = torch.where(m, x, inf).min(dim=-1, keepdim=True).values\n    hi = torch.where(m, x, -inf).max(dim=-1, keepdim=True).values\n    lo = torch.nan_to_num(lo, nan=0.0, posinf=0.0, neginf=0.0)\n    hi = torch.nan_to_num(hi, nan=0.0, posinf=0.0, neginf=0.0)\n    out = (x - lo) / (hi - lo).clamp_min(1e-8)\n    out = torch.nan_to_num(out, nan=0.0, posinf=1.0, neginf=0.0)\n    return out.clamp(0.0, 1.0) * m.to(x.dtype)\n\ndef heuristic(locs, current_node, mask, visited, step_norm, first_node):\n    m = mask.bool()\n    B, N = m.shape\n    cur = locs.gather(1, current_node.view(B, 1, 1).expand(B, 1, 2)).squeeze(1)\n    d_ci = (locs - cur.unsqueeze(1)).norm(dim=-1)\n    BIG = 1e9\n    D = torch.cdist(locs, locs)\n    eye = torch.eye(N, dtype=torch.bool, device=locs.device).unsqueeze(0)\n    Dj = D.masked_fill(~m.unsqueeze(1), BIG).masked_fill(eye, BIG)\n    rho = Dj.min(dim=-1).values\n    rho = torch.where(rho >= 0.5 * BIG, torch.zeros_like(rho), rho)\n    z = _mnorm(rho, m) + _mnorm(-d_ci, m)\n    return z.masked_fill(~m, -1e9)\n"
+  },
+  {
+   "index": 9,
+   "description": "",
+   "code": "import torch\nimport torch.nn.functional as F\nimport math\n\ndef _mnorm(x, m):\n    inf = torch.full_like(x, float(\"inf\"))\n    lo = torch.where(m, x, inf).min(dim=-1, keepdim=True).values\n    hi = torch.where(m, x, -inf).max(dim=-1, keepdim=True).values\n    lo = torch.nan_to_num(lo, nan=0.0, posinf=0.0, neginf=0.0)\n    hi = torch.nan_to_num(hi, nan=0.0, posinf=0.0, neginf=0.0)\n    out = (x - lo) / (hi - lo).clamp_min(1e-8)\n    out = torch.nan_to_num(out, nan=0.0, posinf=1.0, neginf=0.0)\n    return out.clamp(0.0, 1.0) * m.to(x.dtype)\n\ndef heuristic(locs, current_node, mask, visited, step_norm, first_node):\n    m = mask.bool()\n    B = m.shape[0]\n    cur = locs.gather(1, current_node.view(B, 1, 1).expand(B, 1, 2)).squeeze(1)\n    st = locs.gather(1, first_node.view(B, 1, 1).expand(B, 1, 2)).squeeze(1)\n    d_ci = (locs - cur.unsqueeze(1)).norm(dim=-1)\n    d_is = (locs - st.unsqueeze(1)).norm(dim=-1)\n    p = step_norm.view(B, 1).clamp(0.0, 1.0)\n    prox = _mnorm(-d_ci, m)\n    defer = _mnorm(d_is, m)\n    z = p * prox + (1.0 - p) * (prox + defer)\n    return z.masked_fill(~m, -1e9)\n"
+  }
+ ]
+}

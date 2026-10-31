@@ -1,0 +1,12 @@
+# POMO teacher, CVRP-100. The teacher checkpoint (yd-kwon/POMO format) is not part of this package.
+setting: {name: pomo_cvrp}
+run: {output_dir: runs/pomo_cvrp100, seed: 42}
+data: {path: data/pomo_cvrp100_steps}
+generate: {teacher_ckpt: <POMO_CVRP100_CKPT>, problem_size: 100, num_instances: 100000}
+bank: {num_programs: 16, min_programs: 10, max_programs: 30}
+train: {epochs: 20, batch_size: 16384}
+textgrad: {start_epoch: 3, every_n_epochs: 2, backward_every_n: 200, buffer_size: 20}
+plateau: {window: 6}
+drop: {grace_epochs: 6}
+add: {n_candidates: 6, pretrain_epochs: 5, finetune_epochs: 2, cooldown_epochs: 3}
+llm: {model: deepseek-v4-pro, reasoning_effort: none, max_workers: 16, max_cost_usd: 40, price_input: 0.66, price_output: 1.98, price_cache_read: 0.022}

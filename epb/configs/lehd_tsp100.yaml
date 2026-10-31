@@ -1,0 +1,7 @@
+# LEHD teacher, TSP-100. The teacher checkpoint (CIAM-Group/NCO_code format) is not part of this package; the LEHD
+# model code is imported from a clone of that repository (generate.nco_root).
+setting: {name: lehd_tsp}
+run: {output_dir: runs/lehd_tsp100, seed: 42}
+data: {path: data/lehd_tsp100_steps.pt}
+generate: {teacher_ckpt: <LEHD_TSP100_CKPT>, nco_root: <NCO_code clone>, problem_size: 100, num_instances: 100000}
+llm: {model: deepseek-v4-pro, reasoning_effort: none, max_workers: 16, max_cost_usd: 40, price_input: 0.66, price_output: 1.98, price_cache_read: 0.022}

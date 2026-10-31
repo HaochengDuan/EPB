@@ -1,0 +1,33 @@
+{
+  "tsp": {
+    "a_onward": 0.0,
+    "a_regret": 0.5,
+    "a_close": 1.0,
+    "lam_close": 20,
+    "a_dir": 0.4,
+    "a_dense": -0.5,
+    "k_dense": 5,
+    "a_mom": 0.0,
+    "a_skip": 0.0,
+    "r_skip": 0.3,
+    "a_ang": 0.0,
+    "tau": 0.1
+  },
+  "cvrp": {
+    "a_onward": 0.0,
+    "a_regret": 0.5,
+    "a_dir": 0.3,
+    "a_dense": -0.3,
+    "k_dense": 3,
+    "b_far": 0.0,
+    "b_far_depot": 1.5,
+    "b_ret": 0.5,
+    "l_ret": 0.5,
+    "b_dem": 0.2,
+    "b_ang": 0.1,
+    "b_arc": 0.0,
+    "c_0": 0.0,
+    "c_load": 0.0,
+    "tau": 0.1
+  }
+}

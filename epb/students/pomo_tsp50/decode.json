@@ -1,0 +1,1 @@
+{"k_mode": "onehot", "v_mode": "onehot", "tau_h": 0.2, "drop": [13], "enc_layers": 3, "batch": 500, "ms_chunk": 20, "state_convention": "legacy"}

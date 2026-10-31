@@ -1,0 +1,14 @@
+{
+  "description": "Stage-wise program sets of the CVRP-50 student (epb/students/pomo_cvrp50) for `python -m epb.figures stage`. slots: positions in the student's bank.json; the sets must partition the bank. Stacked in list order (bottom to top), members dark to light from the set colour. Stage = where the members' P(program | used capacity) peaks.",
+  "sets": [
+    {"stage": "Early", "name": "Sector / angular-extreme route opening", "colour": "#1b7837", "slots": [16, 9, 19, 11, 17]},
+    {"stage": "Early", "name": "First-arm alignment + angular clustering", "colour": "#4dac26", "slots": [13, 8, 5, 18]},
+    {"stage": "Early", "name": "Frontier and isolated customers", "colour": "#a6dba0", "slots": [12, 15, 3]},
+    {"stage": "Mid", "name": "Capacity look-ahead fit + capacity-triggered return", "colour": "#1f4e79", "slots": [1]},
+    {"stage": "Mid", "name": "Load-scaled proximity + demand fit + density", "colour": "#2e75b6", "slots": [2]},
+    {"stage": "Mid", "name": "Savings + demand-weighted proximity", "colour": "#6aa5d8", "slots": [4]},
+    {"stage": "Late", "name": "Savings + proximity + centroid-pivot return", "colour": "#762a83", "slots": [0]},
+    {"stage": "Late", "name": "On-the-way-back corridor + low-load return", "colour": "#9970ab", "slots": [7]},
+    {"stage": "Late", "name": "Sector, detour and clean-fit returns", "colour": "#c2a5cf", "slots": [6, 10, 14]}
+  ]
+}

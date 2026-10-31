@@ -1,0 +1,11 @@
+torch==2.9.1
+numpy==2.2.6
+scipy==1.15.3
+scikit-learn==1.7.2
+rl4co==0.6.0
+tensordict==0.10.0
+pyyaml==6.0.3
+matplotlib==3.10.7
+textgrad==0.1.8
+anthropic==0.92.0
+openai==2.30.0

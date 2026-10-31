@@ -1,0 +1,473 @@
+context: |-
+  **Subgraph decoder formulation (${formulation}).**
+  At each decoding step the heuristic receives ONLY the unvisited subgraph
+  plus the start (first_loc) and current end (current_loc) of the partial tour.
+  Visited nodes are NOT shown — the input subgraph IS the remaining problem.
+  The output is a score over the K candidate next-nodes, where K shrinks across
+  the rollout from N-1 down to 1.  Your code MUST work for ANY K.
+
+  Progress within the tour is implicit: it is exposed ONLY through K
+  (= unselected_locs.size(1)).  No global N, step index, or step_norm is provided
+  — this matches what the ${teacher} teacher itself sees.  If your strategy needs a
+  "how-far-along" signal, derive it from the geometry of unselected_locs (e.g.
+  spread, mean distance to first_loc) or from K itself, and AVOID hard-coded
+  thresholds tied to a particular N.
+
+  **Critical: the teacher distribution is near one-hot.**
+  The teacher policy is a near-deterministic ${teacher} model:
+    - top-1 candidate receives ~95% probability
+    - top-2 candidate receives ~4.5% probability
+    - the remaining K-2 candidates share less than 0.5% combined
+
+  Two implications for heuristic design:
+
+  1. **Output sharp, decisive scores.** The winning candidate's score should be
+     substantially higher than the runner-up. After softmax with the training
+     temperature, your output should look near-one-hot in clear-cut situations
+     — not a smoothly graded distribution. A decisive winner gap matters more
+     than carefully shaping the long tail.
+
+  2. **Top-1 is what matters; top-2 is a soft backup; the rest is irrelevant.**
+     Don't waste complexity on shaping the bottom of the distribution. A simple
+     "score = -distance + lookahead_bonus" can outperform an 8-signal weighted
+     mixture if the simpler one consistently picks the right top-1.
+
+  Heuristics are evaluated on:
+    (a) whether their argmax matches the teacher's argmax  (primary)
+    (b) whether their top-2 contains the teacher's argmax  (secondary)
+  The full distribution shape does not matter. Avoid over-engineering for it.
+
+idea_system: |-
+  You are an expert in the 2D symmetric Euclidean Travelling Salesman Problem.
+  Training is on ${problem_size}-city instances, but the heuristic must generalise to any
+  subgraph size K ∈ [${k_min}, ${k_max}] because it is called repeatedly during decoding
+  on a shrinking unvisited set.
+
+  ${context}
+
+  Describe ONE strategy for choosing the next city at each decoding step (1-3 sentences).
+  Focus on a strategy that produces a CLEAR top-1 winner from the candidates, not one
+  that ranks many of them similarly. Top-1 hit rate is the primary metric.
+
+  The strategy must rely only on (unselected_locs, first_loc, current_loc).
+  There is NO global "visited mask" or full-instance node list available — visited nodes
+  are not in the input.  Progress within the tour is exposed ONLY via K =
+  unselected_locs.size(1).  No step index or step_norm is provided.
+
+  Diversity guideline:
+  Avoid proposing a strategy that is functionally identical to an existing one.
+  - You may reuse existing features as secondary signals, as long as the overall
+    combination or decision logic is meaningfully new.
+  - Simpler strategies with one or two strong signals are preferred over complex
+    multi-signal blends.
+
+  Use only TSP reasoning; do not mention VRP concepts.
+  Do NOT write code or mathematical formulas.
+
+idea_user: |-
+  Propose a heuristic for next-node selection in 2D Euclidean TSP with ${problem_size} cities.
+  Direction: ${direction}
+
+  Existing strategies (propose something different):
+  ${existing}
+
+seeds:
+  - "nearest-neighbor: prefer nodes closer to the current node"
+  - "remaining-cluster: prefer nodes that connect smoothly into nearby groups of unvisited cities"
+  - "insertion-cost: prefer nodes whose visit is likely to cause small future detour cost"
+  - "angle-smoothness: prefer nodes that continue the current travel direction and avoid sharp turns"
+  - "convex-hull-aware: use the outer boundary of unvisited nodes to avoid leaving boundary cities stranded"
+  - "interior-vs-boundary adaptive: treat boundary cities and interior cities differently depending on tour progress"
+  - "regret-based: prefer nodes that would be costly to postpone until later"
+  - "multi-scale adaptive: balance immediate distance with global remaining-node structure based on how much of the tour is left"
+
+implement_system: &implement_system |-
+  You are writing heuristic modules for the 2D symmetric Euclidean Travelling Salesman Problem (TSP).
+  Training is on ${problem_size}-city instances, but at inference time K (the number of unvisited
+  candidate cities at each decoding step) varies from ${k_max} down to 1.  Your code MUST
+  work for ANY K.
+
+  ${context}
+
+  Your task is to write a Python module containing exactly one function:
+
+    def heuristic(unselected_locs, first_loc, current_loc) -> torch.Tensor:
+        """Score each unvisited candidate.
+
+        Args:
+          unselected_locs:  torch.Tensor [B, K, 2]  candidate (x,y) coords in [0,1]^2
+          first_loc:        torch.Tensor [B, 2]    start node coords
+          current_loc:      torch.Tensor [B, 2]    current end-of-tour coords
+
+        Returns:
+          torch.Tensor [B, K]  finite scores; higher = more preferred next-node.
+        """
+
+  Rules:
+  - Imports allowed: torch, torch.nn.functional as F, math. Nothing else.
+  - All tensor operations must be batched (first dim = B).  K may differ across calls.
+  - No Python `for` loops over batch dim or candidate dim.  No `while` loops.
+    No itertools.  All ops must be vectorised torch ops.
+  - No file I/O, network access, environment access, printing, or side effects.
+  - Do not modify input tensors in-place.
+  - Coordinates are in [0,1]^2.  Embed any constants directly in code.
+  - No PARAMS dict required.
+
+  **Critical: K=1 edge case.** Your code WILL be called with K=1 at the last decoding
+  step.  Common K=1 pitfalls that produce NaN/inf and cause your heuristic to be
+  discarded:
+    - `tensor.std(dim=K_dim)` defaults to `unbiased=True` which needs ≥2 samples;
+      at K=1 it returns NaN.  Use `tensor.std(dim=K_dim, unbiased=False)` or just
+      skip dispersion calcs when K==1.
+    - `tensor.var(dim=K_dim)` has the same default-unbiased issue.  Use
+      `var(dim=K_dim, unbiased=False)`.
+    - Dividing by `K - 1`, `(K * (K - 1))`, or `count - 1` blows up at K=1.  Use
+      `max(K - 1, 1)` or add a `+ 1e-8` denominator guard.
+    - Pairwise distance matrices [B, K, K] degenerate to [B, 1, 1] with the only
+      entry being self-distance 0; downstream divisions or normalisations on this
+      can NaN.
+    - When K=1, the answer is forced (one candidate); your code can early-return
+      `torch.zeros(B, 1, ...)` if any computation would be degenerate.
+
+  Return a torch.Tensor of shape [B, K] with finite scores.
+  Return ONLY the complete Python module, no explanation, no markdown fences.
+
+implement_user: |-
+  Implement the following heuristic strategy as a Python module.
+
+  Strategy: ${strategy}
+
+  Use this structure:
+  ${template}
+
+template: |
+  import torch
+  import torch.nn.functional as F
+  import math
+
+
+  def heuristic(unselected_locs, first_loc, current_loc):
+      """Score each unvisited candidate.
+
+      Args:
+          unselected_locs: torch.Tensor [B, K, 2]
+          first_loc:       torch.Tensor [B, 2]
+          current_loc:     torch.Tensor [B, 2]
+
+      Returns:
+          torch.Tensor [B, K] of finite scores; higher = preferred next-node.
+
+      Note: progress within the tour is exposed only implicitly via K =
+      unselected_locs.size(1).  No global N or step index is provided.
+      """
+      # TODO: Replace with strategy implementation.
+      raise NotImplementedError
+
+fallback: |
+  import torch
+  import torch.nn.functional as F
+  import math
+
+
+  def heuristic(unselected_locs, first_loc, current_loc):
+      # Nearest-neighbour fallback: prefer candidates closest to current_loc.
+      d = ((unselected_locs - current_loc.unsqueeze(1)) ** 2).sum(-1).sqrt()
+      return -10.0 * d
+
+retry_reject: |-
+  That module was REJECTED: ${reason}. Return a corrected complete module that satisfies every rule.
+
+describe_system: |-
+  You are an expert in combinatorial optimisation. Describe heuristic strategies concisely in plain language.
+
+describe_user: |-
+  Below is a Python heuristic function for TSP next-node selection
+      with ${problem_size} cities in [0,1]^2.
+      Write a 1-3 sentence natural language description of the geometric
+      strategy it implements. Focus on what scoring signals it uses and
+      how it balances them. No code, no formulas.
+
+      ```python
+      ${code}
+      ```
+
+backward_code_system: |-
+  You are the BACKWARD PASS of a TextGrad optimizer for TSP next-node selection heuristics.
+  Training was on ${problem_size}-city instances; K (candidate count) varies at inference.
+
+  ${context}
+
+  The heuristic uses signature
+    heuristic(unselected_locs [B,K,2], first_loc [B,2], current_loc [B,2]) -> [B,K]
+
+  You will see a heuristic function and one decision step where it picked a different
+  top-1 from the teacher. Produce a TEXT GRADIENT: a concise diagnosis of why the code's
+  score for the teacher's top-1 candidate fell behind its (wrong) argmax.
+
+  This is NOT a code fix. Output only a diagnosis in this exact format:
+  LOGIC: [what the code currently computes for ranking these top candidates]
+  TEACHER: [the teacher chose candidate X with ~95% mass — what about X would the code recognize?]
+  FLAW: [why the code's score for X fell below the score for the (wrong) argmax]
+  DIRECTION: [what change would push X's score above the wrong argmax — focus on
+              making the winning gap larger or fixing the tiebreaker, NOT on shaping
+              the full distribution]
+
+  Be concrete about geometry (distances, angles, tour-closing cost, cluster structure).
+  2-5 sentences total. No code. Note that K varies — your reasoning must hold for any K.
+
+backward_code_user: |-
+  Heuristic code:
+      ${code}
+
+      Failure case [KL(teacher‖heuristic)=${kl}]:
+  ${case}
+
+      Generate the text gradient for this failure case.
+      Focus especially on why the heuristic's top-ranked candidate differs from the teacher's,
+      described purely in geometric terms (positions, distances, angles).  Candidates have NO
+      stable identifier — your reasoning must be over geometry, not node ids.
+
+backward_desc_system: |-
+  You are the BACKWARD PASS of a TextGrad optimizer for TSP heuristic descriptions.
+  Training was on ${problem_size}-city instances; the description must remain valid for any K.
+
+  ${context}
+
+  Given a heuristic's natural language description and a decision step where the heuristic
+  picked the wrong top-1, produce a TEXT GRADIENT: what does the description fail to capture
+  that would help the implementation pick the right top-1 next time?
+
+  Format:
+  MISSING: [what geometric reasoning the description omits or under-emphasises]
+  MISLEADING: [anything in the description that points the implementation in the wrong direction]
+  DIRECTION: [how the description should be revised — focus on the top-1 ranking decision,
+              not on shaping a full distribution]
+
+  2-4 sentences. No code. Focus on strategy-level geometric reasoning that affects top-1.
+
+backward_desc_user: |-
+  Heuristic description: "${description}"
+
+      Heuristic code:
+      ${code}
+
+      Failure case [KL=${kl}]:
+  ${case}
+
+      Generate the text gradient for the DESCRIPTION (not the code).
+      Reason in geometric terms only — candidates have no stable identifier.
+
+optimizer_system: |-
+  You are part of an optimization system that improves Python heuristic functions for TSP
+  next-node selection. Training was on ${problem_size}-city instances; K (candidate count)
+  varies from ${k_max} down to 1 at inference time.
+
+  ${context}
+
+  Heuristic signature is fixed:
+    heuristic(unselected_locs [B,K,2], first_loc [B,2], current_loc [B,2]) -> [B,K]
+
+  You will receive the current heuristic code and text gradients (diagnoses of failure cases).
+  Your task: synthesize the gradients and produce an improved version of the code that picks
+  the teacher's top-1 candidate more often (and at least keeps it in the top-2 when it can't win).
+
+  - Address the most common and severe failure patterns across all gradients
+  - Momentum gradients indicate persistent failure modes — treat them as high priority
+  - **Sharpen the winning gap.** If the existing code outputs scores that are too close
+    together at the top, increase the multiplier on the dominant signal so the winner
+    pulls ahead more decisively after softmax.
+  - Keep the function signature unchanged.
+  - Imports: torch, torch.nn.functional as F, math only.
+  - Hard constraint: NO Python `for` loops over batch dim or candidate dim. NO `while` loops.
+    All ops must be vectorised torch ops.
+  - Code must work for ANY K (do not assume K = ${k_max}).
+  - **K=1 numerical safety**: `tensor.std/var(dim, unbiased=True)` returns NaN at K=1.
+    Always pass `unbiased=False` when reducing along the K dimension.  Avoid dividing
+    by `K-1` or `K*(K-1)` without guarding (`max(K-1, 1)` or `+ 1e-8`).  Early-return
+    `torch.zeros(B, 1, ...)` when K==1 if any computation would be degenerate.
+  - Embed constants directly in code. No markdown fences.
+  - Prefer simplicity. A 5-line scorer that picks top-1 right is better than a 50-line
+    multi-signal blend that only gets top-3 right.
+
+  Put the improved Python module between {new_variable_start_tag} and {new_variable_end_tag}.
+
+textgrad:
+  code_role: |-
+    a Python function `heuristic(unselected_locs, first_loc, current_loc) -> torch.Tensor [B, K]` for TSP next-node selection that minimises KL(teacher_policy ‖ heuristic) and top-k ranking error. Trained on TSP-${problem_size}; must work for any K ∈ [${k_min}, ${k_max}]. Imports: torch, F, math. All ops batched.
+  desc_role: |-
+    a 1-3 sentence natural language description of a TSP next-node selection strategy on the unvisited subgraph (no global visited mask). Trained on TSP-${problem_size}, must generalise to any K.
+  code_constraints:
+    - "Keep function signature `heuristic(unselected_locs, first_loc, current_loc) -> [B,K]`."
+    - "Imports: torch, torch.nn.functional as F, math only. All ops batched. Code must work for any K. No side effects."
+  desc_constraints:
+    - "1-3 sentences. Geometric reasoning over the unvisited subgraph for TSP only. No code. Must hold for any K."
+
+cluster_system: |-
+  You are clustering geometric failure cases for a 2D Euclidean TSP next-node
+  selection heuristic with variable subgraph size K.  Each case is a decision
+  step where ALL existing heuristics in the portfolio picked the wrong next
+  candidate compared to the ${teacher} teacher.
+
+  Cases are described GEOMETRY ONLY — no node ids, no step_norm — because the
+  heuristic these clusters will guide can only see (unselected_locs, first_loc,
+  current_loc).  Field key:
+    K                    : number of unvisited candidates remaining
+    cur, first           : (x,y) of current end-of-tour and tour-start
+    teacher_pick         : (x,y) of teacher's chosen next city
+    farness_ratio        : d(cur,teacher) / d(cur,nearest_unvisited)
+                           > 1 means teacher is NOT the nearest unvisited
+    forward_dot          : cos angle between (cur-first) and (teacher-cur)
+                           > 0 = teacher continues away from start
+                           < 0 = teacher turns back toward closing
+    teacher_to_first_d   : straight-line distance from teacher to start
+
+  Cluster the cases into exactly ${n_modes} groups by SHARED GEOMETRIC
+  PATTERN.  Each cluster should be:
+    - HOMOGENEOUS internally (cases share a pattern a heuristic could target)
+    - HETEROGENEOUS across clusters (different clusters address different
+      patterns)
+
+  For each cluster output:
+    - name: ONE sentence, GEOMETRIC, describing the shared pattern.
+      Use only K-relative geometry the variable-K heuristic could derive
+      (no node ids, no step_norm, no global N).
+      Example: "teacher picks a moderately distant point in the backward
+      direction with K small, indicating a closing-cost-aware choice".
+    - strategy: 1-2 sentences on how a heuristic could address this pattern
+      (restate the pattern: the strategy is passed on without the name).
+    - case_indices: 2-5 representative case numbers from the input.
+
+  Output STRICTLY as a JSON array (no markdown fences, no commentary):
+  [
+    {"name": "...", "strategy": "...", "case_indices": [3, 17, 42]},
+    ...
+  ]
+  Trained on TSP-${problem_size}, but each cluster must hold for any K.
+
+cluster_user: |-
+  Existing heuristics in the portfolio:
+  ${frozen}${summary}
+  Failure cases:
+  ${cases}
+
+add_implement_system: *implement_system
+
+add_implement_user: |-
+  The portfolio of existing heuristics consistently mis-picks on the following
+  cluster of decision steps.  Each fault case is described by:
+    - K        : number of unvisited candidates at this step
+    - cur      : current position
+    - first    : tour-start position
+    - teacher_pick: where the ${teacher} teacher chose to go
+    - farness_ratio: teacher_d / nearest_unvisited_d
+      (> 1 means teacher is NOT the nearest candidate; nearest-neighbour fails)
+    - forward_dot: cosine of angle between (cur - first) and (teacher_pick - cur)
+      (> 0 = teacher continues away from start; < 0 = teacher turns back toward closing)
+    - teacher_to_first_d: straight-line distance from teacher_pick to the tour start
+
+  Existing heuristics (do NOT propose a duplicate):
+  ${frozen}
+  Fault cases of this cluster:
+  ${demos}
+
+  Strategy for this cluster:
+  ${strategy}
+
+  Implement this strategy as a Python module that, given the variable-length subgraph
+  inputs (unselected_locs, first_loc, current_loc), picks the teacher's candidate in
+  cases like the ones shown.  Reason in geometric terms only.  Do NOT use step_norm or
+  step index — derive any "progress" signal from K (= unselected_locs.size(1)) or
+  geometric features of unselected_locs.
+
+  Use this structure:
+  ${template}
+
+retry_lowhit: |-
+  A previous implementation of this strategy picked the teacher's top-1 on only a fraction ${best_hit} of the
+  held-out fault cases of this cluster — below the threshold. Produce a STRUCTURALLY DIFFERENT vectorized formulation
+  targeting the same failure pattern. It is fine if the new rule still covers only a subset of cases (specialists
+  are valued), but it must reliably solve its target subset. Consider a different geometric primitive entirely
+  (e.g. if the prior attempt used distance-based scoring, try angle/projection/dot-product based scoring, or vice
+  versa).
+
+budget:
+  block: |-
+    PROGRAM COMPLEXITY BUDGET (hard rules, checked automatically; a violation is rejected like a crash):
+      - The raw inputs (${raw_inputs}) may ONLY be passed
+        to the primitives below. Never index, slice or compute on them directly. No torch.cdist,
+        topk, sort, gather, matmul; no loops, comprehensions, helper functions or classes.
+      - Use at most ${max_concepts} DISTINCT primitive(s) (each is one concept). Combine their [B,K] outputs
+        with plain arithmetic and elementwise torch ops (exp, log, clamp, sigmoid, minimum, maximum,
+        where). The code must work for any number of candidates K. At most ${max_branches} branch(es) (if / torch.where / masked_fill). At most ${max_lines} statement
+        lines inside the function.
+      - Start the module with `import torch` and `from ${feats_module} import feat`.
+      Primitives (all batched, return [B,K] floats):
+    ${primitives}
+      One program = ONE clear idea expressed with ${max_concepts} concept(s), e.g. "nearest neighbour, but
+      prefer isolated cities": logits = -feat.dist_cur(unselected_locs, current_loc) + 2.0 * feat.nn_dist(unselected_locs).
+  code_constraint: |-
+    PROGRAM BUDGET: raw inputs only inside feat.* primitives; at most ${max_concepts} distinct primitives, ${max_branches} branches, ${max_lines} statement lines. Violations are rejected.
+  tg_reject: |-
+    The previous rewrite was REJECTED by the program-complexity gate: ${reason}. The rewrite must stay within the budget (raw inputs only inside feat.* primitives; at most the allowed number of distinct primitives, branches and statement lines).
+  fallback: |-
+    import torch
+    from ${feats_module} import feat
+
+    def heuristic(unselected_locs, first_loc, current_loc):
+        return -feat.dist_cur(unselected_locs, current_loc)
+  template:
+    tiny: |-
+      import torch
+      from ${feats_module} import feat
+
+      def heuristic(unselected_locs, first_loc, current_loc):
+          # Uses 1 concept(s): dist_cur
+          d_cur = feat.dist_cur(unselected_locs, current_loc)
+
+
+          logits = -d_cur
+          return logits
+    simple: |-
+      import torch
+      from ${feats_module} import feat
+
+      def heuristic(unselected_locs, first_loc, current_loc):
+          # Uses 2 concept(s): dist_cur, dist_start
+          d_cur = feat.dist_cur(unselected_locs, current_loc)
+          d_start = feat.dist_start(unselected_locs, first_loc)
+
+          logits = -d_cur - 0.5 * d_start
+          return logits
+    medium: |-
+      import torch
+      from ${feats_module} import feat
+
+      def heuristic(unselected_locs, first_loc, current_loc):
+          # Uses 2 concept(s): dist_cur, dist_start
+          d_cur = feat.dist_cur(unselected_locs, current_loc)
+          d_start = feat.dist_start(unselected_locs, first_loc)
+          k = feat.n_unvisited(unselected_locs)
+          logits = -d_cur - 0.5 * d_start
+          return logits
+  seeds:
+    tiny:
+      - "nearest-neighbour: score candidates by closeness to the current city (dist_cur)"
+      - "isolation-first: prefer candidates that are far from every other candidate (nn_dist)"
+      - "density: prefer candidates that have many other candidates nearby (density)"
+      - "homeward: prefer candidates that lie in the direction of the start city (homeward_cos)"
+      - "outward sweep: prefer candidates on the outskirts of the remaining set (outward)"
+      - "closing: prefer candidates close to the tour's starting city (dist_start)"
+    simple: &seeds_two
+      - "nearest-neighbour: score candidates by closeness to the current city (dist_cur)"
+      - "isolation-first: prefer candidates that are far from every other candidate (nn_dist)"
+      - "density: prefer candidates that have many other candidates nearby (density)"
+      - "homeward: prefer candidates that lie in the direction of the start city (homeward_cos)"
+      - "outward sweep: prefer candidates on the outskirts of the remaining set (outward)"
+      - "closing: prefer candidates close to the tour's starting city (dist_start)"
+      - "closing-aware nearest neighbour: dist_cur while many candidates remain, dist_start when few (dist_cur + n_unvisited or dist_start)"
+      - "lookahead regret: nearest neighbour with a bonus for isolated candidates (dist_cur + nn_dist)"
+      - "away-from-home sweep: nearest neighbour that avoids heading back too early (dist_cur + homeward_cos)"
+      - "cluster-first: nearest neighbour that favours dense areas (dist_cur + density)"
+      - "boundary sweep: nearest neighbour that favours the outskirts (dist_cur + outward)"
+      - "endgame: return toward the start city when few candidates remain (dist_start + n_unvisited)"
+    medium: *seeds_two

@@ -1,0 +1,96 @@
+{
+  "problem_size": 50,
+  "pomo_size": 50,
+  "rollout_batch_instances": 32,
+  "load_max": 1.0,
+  "n_feasible_min": 2,
+  "eval_batch": 256,
+  "seed": 2026101871,
+  "instance_id_offset": 12000000,
+  "batches": {
+    "A": [
+      0,
+      6144
+    ],
+    "B": [
+      6144,
+      12288
+    ]
+  },
+  "keep_mod": 30,
+  "carriers": [
+    7,
+    10
+  ],
+  "opposing_family": [
+    0,
+    5,
+    19
+  ],
+  "leak_set": [
+    1,
+    2,
+    3,
+    4,
+    9,
+    11,
+    12,
+    13,
+    14,
+    15,
+    16,
+    17,
+    18
+  ],
+  "mirror_inert_other": [
+    6,
+    8
+  ],
+  "paper_id_of_bank": {
+    "0": "H01",
+    "1": "H00",
+    "2": "H02",
+    "3": "H12",
+    "4": "H05",
+    "5": "H17",
+    "6": "H07",
+    "7": "H03",
+    "8": "H16",
+    "9": "H06",
+    "10": "H09",
+    "11": "H15",
+    "12": "H10",
+    "13": "H08",
+    "14": "H14",
+    "15": "H11",
+    "16": "H04",
+    "17": "H18",
+    "18": "H19",
+    "19": "H13"
+  },
+  "alpha_min_deg": 8.0,
+  "alpha_max_deg": 30.0,
+  "coord_lo": 0.0,
+  "coord_hi": 1.0,
+  "min_node_sep": 0.002,
+  "carrier_inert_tol": 1e-05,
+  "analytic_pred_tol": 0.0001,
+  "primary": {
+    "load_max": 0.25,
+    "share_min": 0.5,
+    "ms_floor": 0.1
+  },
+  "secondary_load_thresholds": [
+    0.35,
+    0.5
+  ],
+  "share_grid": [
+    0.25,
+    0.5,
+    0.7
+  ],
+  "eps_clip": 0.001,
+  "n_boot": 2000,
+  "n_perm": 5000,
+  "null_tolerance": 1e-09
+}

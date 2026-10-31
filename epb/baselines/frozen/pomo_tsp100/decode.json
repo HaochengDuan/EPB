@@ -1,0 +1,1 @@
+{"tau_h": 0.1, "enc_layers": 4, "batch": 512, "ms_chunk": 8, "state_convention": "legacy"}

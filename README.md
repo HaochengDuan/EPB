@@ -4,9 +4,9 @@
 EPB distills black-box neural combinatorial optimization (NCO) policies into interpretable surrogates. An EPB student combines a bank of `M` interpretable, executable, and editable decision-rule programs with a state-dependent attention router to support trustworthy decision-making.
 
 <p align="center">
-  <img width="650" alt="epb_tsp_tour_direct_labels" src="https://github.com/user-attachments/assets/e86cbc61-ea5c-4365-9762-e0a2ea9a788d" />
+  <img width="324" alt="epb_tsp_tour_direct_labels" src="https://github.com/user-attachments/assets/e86cbc61-ea5c-4365-9762-e0a2ea9a788d" />
   <br />
-  <em>Interpretable Tour Construction with EPB</em>
+  <em>Figure 1: Interpretable Tour Construction with EPB</em>
 </p>
 
 Each program produces an action distribution, and the router forms a convex mixture to approximate the teacher’s per-step action distribution. At a fixed bank size, Hybrid Gradient Descent (Figure 2) combines LLM-driven program revision via TextGrad with numerical gradient updates to the router. **Add** introduces programs targeting unresolved failure modes, while **Drop** removes redundant programs. We evaluate EPB with POMO and LEHD on TSP and CVRP.

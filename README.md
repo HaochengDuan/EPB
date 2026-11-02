@@ -1,5 +1,5 @@
 
-# Interpreting Neural Combinatorial Optimization via Evolving Programmatic Bottlenecks [NeurIPS 2026]
+# [NeurIPS 2026] Interpreting Neural Combinatorial Optimization via Evolving Programmatic Bottlenecks 
 
 EPB distills black-box neural combinatorial optimization (NCO) policies into interpretable surrogates. An EPB student combines a bank of `M` interpretable, executable, and editable decision-rule programs with a state-dependent attention router to support trustworthy decision-making.
 

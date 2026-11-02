@@ -1,16 +1,9 @@
 # EPB: Interpreting Neural Combinatorial Optimization via Evolving Programmatic Bottlenecks
 
-An EPB student is a bank of `M` LLM-written heuristic programs plus a small attention router, distilled from the
-decisions of a neural constructive teacher (POMO or LEHD, on TSP or CVRP). The router is trained by gradient descent,
-the program code is improved by TextGrad, and the bank is pruned and grown by slot **drop** and fault-targeted slot
-**add** on plateaus.
+EPB distills black-box neural combinatorial optimization (NCO) policies into interpretable surrogates. An EPB student consists of a bank of `M` LLM-generated, executable decision-rule programs and a state-dependent attention router. Each program produces an action distribution, and the router forms a convex mixture to approximate the teacher’s per-step action distribution. At a fixed bank size, Hybrid Textual–Numerical Gradient Descent combines LLM-driven program revision via TextGrad with numerical gradient updates to the router. **Add** introduces programs targeting unresolved failure modes, while **Drop** removes redundant programs. We evaluate EPB with POMO and LEHD on TSP and CVRP.
 
-```
-teacher --> decision-step dataset --> student = router(Q/K) o program bank(V)
-                                             |               |
-                                     gradient descent    TextGrad (LLM)
-                                             +-- slot drop / slot add on plateau --+
-```
+<img width="1498" height="1260" alt="epb_hybrid_gradient" src="https://github.com/user-attachments/assets/0449ac37-f997-455e-95eb-05b87bacd0fa" />
+
 
 Everything is in the package [`epb/`](epb/README.md): one training pipeline for the four settings
 (`python -m epb.generate`, `python -m epb.train`), the evaluation of the students and every baseline on fixed instance

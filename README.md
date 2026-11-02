@@ -2,7 +2,12 @@
 
 EPB distills black-box neural combinatorial optimization (NCO) policies into interpretable surrogates. An EPB student consists of a bank of `M` LLM-generated, executable decision-rule programs and a state-dependent attention router. Each program produces an action distribution, and the router forms a convex mixture to approximate the teacher’s per-step action distribution. At a fixed bank size, Hybrid Textual–Numerical Gradient Descent combines LLM-driven program revision via TextGrad with numerical gradient updates to the router. **Add** introduces programs targeting unresolved failure modes, while **Drop** removes redundant programs. We evaluate EPB with POMO and LEHD on TSP and CVRP.
 
-<img width="1498" height="1260" alt="epb_hybrid_gradient" src="https://github.com/user-attachments/assets/0449ac37-f997-455e-95eb-05b87bacd0fa" />
+<p align="center">
+  <img width="650" alt="EPB hybrid gradient descent"
+       src="https://github.com/user-attachments/assets/0449ac37-f997-455e-95eb-05b87bacd0fa" />
+  <br />
+  <em>Hybrid Gradient Descent</em>
+</p>
 
 
 Everything is in the package [`epb/`](epb/README.md): one training pipeline for the four settings

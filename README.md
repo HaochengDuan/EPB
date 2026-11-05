@@ -49,6 +49,8 @@ keys are needed only for training (evaluation, figures, interventions and counte
 
 ## Usage
 
+🧬 Let’s Evolve!
+
 Run every command from this directory:
 
 ```bash
@@ -58,7 +60,22 @@ python -m epb.generate --config epb/configs/pomo_cvrp50.yaml --set generate.teac
 python -m epb.train    --config epb/configs/pomo_cvrp50.yaml
 ```
 
+
 [`epb/README.md`](epb/README.md) documents the training pipeline, the evaluation protocol, the figures, the
 interventions and the counterfactual tests.
 
 `textgrad` writes a `logs/` directory into the working directory on import; it is ignored by `.gitignore`.
+
+
+## Citation
+
+If you find our paper or code useful, please consider citing our work:
+
+```bibtex
+@inproceedings{duan2026interpreting,
+  title     = {Interpreting Neural Combinatorial Optimization via Evolving Programmatic Bottlenecks},
+  author    = {Duan, Haocheng and Guo, Yuxin and Bi, Jieyi and Xie, Anqi and Li, Sirui and Ma, Yining and Wu, Cathy},
+  booktitle = {Advances in Neural Information Processing Systems},
+  year      = {2026}
+}
+```
